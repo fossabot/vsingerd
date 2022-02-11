@@ -1,3 +1,0 @@
-wget==3.2
-requests-html==0.10.0
-beautifulsoup4==4.8.2

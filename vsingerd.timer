@@ -1,0 +1,10 @@
+[Unit]
+Description=A tool to fetch and repost social media
+
+[Timer]
+OnActiveSec=30s
+OnUnitActiveSec=5min
+Unit=vsingerd.service
+
+[Install]
+WantedBy=multi-user.target

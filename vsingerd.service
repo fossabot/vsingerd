@@ -1,0 +1,9 @@
+[Unit]
+Description=A tool to fetch and repost social media
+
+[Service]
+Type=oneshot
+Environment="CONFIG_WEIBO_IDS=5146173015:5146669192"
+Environment="CONFIG_TG_TOKEN=123456789:ExampleTelegramToken"
+Environment="CONFIG_TG_CHAT=-20120712"
+ExecStart=/bin/python3 /opt/vsingerd/src/vsingerd.py
