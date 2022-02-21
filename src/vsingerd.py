@@ -168,7 +168,6 @@ class Creeper:
             self.send_message(message)
 
     def run_all(self):
-        self.send_telegram_message(f'在{time.strftime("%Y-%m-%d %H:%M:%S %Z")}运行', "https://k3s.io")
         for weibo_id in self.weibo_ids:
             try:
                 self.run(weibo_id)
