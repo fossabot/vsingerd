@@ -1,195 +1,166 @@
 import os
-import csv
-import sys
 import time
-import json
-import requests
 import traceback
-from typing import List
-from dataclasses import dataclass
+from typing import List, Tuple
+from datetime import datetime
 from requests_html import HTMLSession
 from bs4 import BeautifulSoup
 
-
-class Indexer:
-    csv_path = "data/index.csv"
-    csv_header = ["user", "content", "link", "update_at"]
-
-    @staticmethod
-    def ensure_database_created():
-        os.makedirs("data", exist_ok=True)
-        if not os.path.exists(Indexer.csv_path):
-            with open("data/index.csv", mode="w+", encoding="utf8", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=Indexer.csv_header)
-                writer.writeheader()
-
-    def __init__(self):
-        Indexer.ensure_database_created()
-        with open("data/index.csv", mode="r", encoding="utf8") as f:
-            reader = csv.DictReader(f, fieldnames=Indexer.csv_header)
-            self.database = [row for row in reader]
-
-    def exist(self, link: str) -> bool:
-        for row in self.database:
-            if row["link"].strip() == link.strip():
-                return True
-        return False
-
-    @staticmethod
-    def write(message):
-        Indexer.ensure_database_created()
-        with open("data/index.csv", mode="a", encoding="utf8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=Indexer.csv_header, )
-            writer.writerow({
-                "user": message["user"],
-                "content": json.dumps(message["content"], ensure_ascii=False),
-                "link": message["link"],
-                "update_at": time.time(),
-            })
+from model import Message
+from subscriber.csv import CsvSubscriber
+from subscriber.telegram import TelegramSubscriber
 
 
-# noinspection PyBroadException
-@dataclass
 class Creeper:
-    weibo_ids: List[int]
-    telegram_token: str
-    telegram_chat: int
-
-    def __post_init__(self):
-        self.telegram_endpoint = f"https://api.telegram.org/bot{self.telegram_token}"
-        self.telegram_endpoint_log = f"https://api.telegram.org/bot****"
+    def __init__(self, weibo_id: int, last_update: int):
+        self.weibo_id = weibo_id
+        self.last_update = last_update
         self.session = HTMLSession()
-        self.indexer = Indexer()
 
-    def send_telegram_message(self, text: str, weibo_link: str):
-        data = {
-            "chat_id": self.telegram_chat,
-            "text": text,
-            "reply_markup": {
-                "inline_keyboard": [[{"text":"🔗点击查看原微博", "url": weibo_link}]]
-            },
-        }
-        print(f"POST {self.telegram_endpoint_log}/sendMessage", end="", flush=True)
-        res = requests.post(f"{self.telegram_endpoint}/sendMessage", json=data)
-        if res.status_code != 200:
-                print("\n>", res.json())
-        time.sleep(2)
-        print(f" ({res.status_code})")
+    def run(self) -> Tuple[List[Message], int]:
+        print(time.strftime(f"%Y-%m-%d %H:%M:%S Start fetching Weibo UID {self.weibo_id}", time.localtime()))
+        activity_cards = self.get_activity_cards()
+        update_at = int(time.time())
+        tweets = self.get_tweets(activity_cards)
+        messages = self.get_messages(tweets)
+        messages = list(filter(lambda m: m.update_at >= self.last_update, messages))
+        return messages, update_at
 
-    def send_telegram_photos(self, photo_urls: List[str]):
-        for url in photo_urls:
-            data = {"chat_id": self.telegram_chat, "photo": url}
-            print(f"POST {self.telegram_endpoint_log}/sendPhoto", end="", flush=True)
-            res = requests.post(f"{self.telegram_endpoint}/sendPhoto", json=data)
-            if res.status_code != 200:
-                print("\n>", res.json())
-            time.sleep(2)
-            print(f" ({res.status_code})")
+    def get_activity_cards(self) -> List[dict]:
+        url = f"https://m.weibo.cn/api/container/getIndex?containerid=107603{self.weibo_id}"
+        print(f"GET {url}")
+        activity_cards: List[dict] = self.session.get(url).json().get("data", {}).get("cards", [])[::-1]
+        if activity_cards is None:
+            raise Exception(f"Unable to get activity cards of UID {self.weibo_id}")
+        return activity_cards
 
-    def send_message(self, message: dict):
-        text = f'{message["user"]}：'
-        if len(message["images"]) > 0:
-            text += f'[{len(message["images"])}图]'
-        text += "\n" + message["content"]
-        self.send_telegram_message(text, message["link"])
-        if len(message["images"]) < 3:
-            for image in message["images"]:
-                self.send_telegram_photos([image])
-                return
-        images_slice = int(len(message["images"]) / 2)
-        self.send_telegram_photos(message["images"][:images_slice])
-        self.send_telegram_photos(message["images"][images_slice:])
-
-    def save_message(self, message: dict):
-        Indexer.write(message)
-        os.makedirs("data/images", exist_ok=True)
-        for image in message["images"]:
-            basename = os.path.basename(image)
-            with open(f"data/images/{basename}", "wb+") as f:
-                print(f"GET {image}")
-                f.write(self.session.get(image).content)
-
-    def parse_activity_cards(self, weibo_id: int, activity_cards: List[dict]):
-        messages = []
+    def get_tweets(self, activity_cards: List[dict]) -> List[dict]:
+        tweets = list()
         for activity_card in activity_cards:
-            tweet: dict = activity_card.get("mblog")
-            if tweet is None:
+            tweet_preview: dict = activity_card.get("mblog")
+            if tweet_preview is None:
+                print(f"A null tweet encountered when parsing activity cards of UID {self.weibo_id}")
                 continue
-            if tweet.get("isLongText"):
-                try:
-                    url = f"https://m.weibo.cn/statuses/show?id={tweet.get('bid')}"
-                    print(f"GET {url}")
-                    full_tweet = self.session.get(url).json()
-                except:
-                    continue
-                tweet = full_tweet.get("data")
-            message = self.tweet_to_message(weibo_id, tweet)
-            if message is not None:
+            tweet = self.get_tweet(tweet_preview)
+            if tweet.get("bid") is None:
+                print(f"A a tweet of UID {self.weibo_id} has no id")
+                continue
+            tweets.append(tweet)
+        return tweets
+
+    # noinspection PyBroadException
+    def get_tweet(self, tweet: dict) -> dict:
+        if tweet.get("isLongText"):
+            # 获取长微博完整内容
+            print(f"Parsing long weibo of UID {self.weibo_id}")
+            try:
+                url = f"https://m.weibo.cn/statuses/show?id={tweet.get('bid')}"
+                print(f"GET {url}")
+                tweet = self.session.get(url).json().get("data")
+            except:
+                print(f"Unable to load lang weibo {tweet.get('bid')} of UID {self.weibo_id}")
+                return {}
+        return tweet
+
+    # noinspection PyBroadException
+    def get_messages(self, tweets: List[dict]) -> List[Message]:
+        messages = list()
+        for tweet in tweets:
+            try:
+                message = Message(
+                    author=tweet.get("user", {}).get("screen_name", f"[无法获取用户名] (uid:${self.weibo_id})"),
+                    content=self.parse_tweet_text(tweet),
+                    link=f"https://weibo.com/{self.weibo_id}/{tweet.get('bid')}",
+                    update_at=int(datetime.strptime(tweet.get("created_at"), "%a %b %d %H:%M:%S %z %Y").timestamp()),
+                    images=list(filter(
+                        lambda url: url.strip() != "",
+                        [p.get("large", {}).get("url") for p in tweet.get("pics", [])])
+                    )
+                )
+
+                if tweet.get('weibo_position') == 3:
+                    # 如果状态为3表示转发微博，附加上转发链，状态1 为原创微博
+                    retweet = tweet.get("retweeted_status", {})
+                    retweet_username = retweet.get("user", {}).get("screen_name", "未知用户")
+                    retweet_content = retweet.get("raw_text", "[原微博被夹了]")
+                    message.content += f'@{retweet_username}: {retweet_content}'
+                if message.content.strip() == "":
+                    message.content = "[内容为空]"
                 messages.append(message)
+            except:
+                print(f"Error parsing tweet {tweet.get('bid')} of UID {self.weibo_id} to message")
+                continue
         return messages
 
-    def tweet_to_message(self, weibo_id: int, tweet: dict):
-        tweet_link = f'https://weibo.com/{weibo_id}/{tweet.get("bid", "")}'
-        if self.indexer.exist(tweet_link):
-            return
+    @staticmethod
+    def parse_tweet_text(tweet: dict) -> str:
+        text = tweet.get("text", "")
+        if text.strip() == "":
+            text = tweet.get("raw_text")
+        return BeautifulSoup(text.replace("<br />", "\n"), "html.parser").get_text()
 
-        message = {
-            "content": BeautifulSoup(tweet.get("text").replace("<br />", "\n"), "html.parser").get_text(),
-            "images": list(filter(lambda url: url.strip() != "",
-                                  [p.get("large", {}).get("url") for p in tweet.get("pics", [])])),
-            "link": tweet_link,
-            "user": tweet.get("user", {}).get("screen_name", "?")
+
+def basedir() -> str:
+    return os.path.abspath(os.path.dirname(__file__))
+
+
+def get_last_update_filename(file_id: int) -> str:
+    dirname = os.path.join(basedir(), "last_update")
+    os.makedirs(dirname, exist_ok=True)
+    file = os.path.join(dirname, f"{file_id}.last_update")
+    return file
+
+
+def read_last_update(file_id: int) -> int:
+    file = get_last_update_filename(file_id)
+    if not os.path.exists(file):
+        return 0
+    with open(file, encoding="utf-8") as f:
+        return int(f.read())
+
+
+def write_last_update(file_id: int, timestamp: int):
+    file = get_last_update_filename(file_id)
+    with open(file, "w+", encoding="utf-8") as f:
+        f.write(str(timestamp))
+
+
+def main():
+    config = {
+        "weibo": {
+            "ids": [int(i.strip()) for i in os.getenv("CONFIG_WEIBO_IDS", "").strip().split(":")]
+        },
+        "telegram": {
+            "enable": (os.getenv("CONFIG_TG_DISABLE") is None),
+            "token": os.getenv("CONFIG_TG_TOKEN").strip(),
+            "chat": int(os.getenv("CONFIG_TG_CHAT").strip())
+        },
+        "csv": {
+            "enable": (os.getenv("CONFIG_CSV_DISABLE") is None),
+            "path": os.getenv("CONFIG_CSV_PATH", os.path.join(basedir(), "data")).strip()
+        },
+        "mysql": {
+            "enable": (os.getenv("CONFIG_MYSQL") is not None),
+            "file_storage": os.getenv("CONFIG_MYSQL_FILE_STORAGE")
         }
-
-        if tweet.get('weibo_position') == 3:
-            # 如果状态为3表示转发微博，附加上转发链，状态1为原创微博
-            retweet = tweet.get("retweeted_status", {})
-            retweet_username = retweet.get("user", {}).get("screen_name", "未知用户")
-            retweet_content = retweet.get("raw_text", "原微博被夹了")
-            message["title"] += f'@{retweet_username}: {retweet_content}'
+    }
+    for weibo_id in config["weibo"]["ids"]:
+        # noinspection PyBroadException
         try:
-            self.save_message(message)
+            last_update = read_last_update(weibo_id)
+            creeper = Creeper(weibo_id, last_update)
+            messages, new_timestamp = creeper.run()
+            write_last_update(weibo_id, new_timestamp)
+            print(f"Got {len(messages)} for UID {weibo_id}")
+            if config["csv"]["enable"]:
+                CsvSubscriber(config["csv"]).send_messages(messages)
+            if config["telegram"]["enable"]:
+                TelegramSubscriber(config["telegram"]).send_messages(messages)
         except:
-            pass
-        return message
-
-    def run(self, weibo_id: int):
-        print(time.strftime('%Y-%m-%d %H:%M:%S 执行完毕', time.localtime()))
-        url = f"https://m.weibo.cn/api/container/getIndex?containerid=107603{weibo_id}"
-        print(f"GET {url}")
-        try:
-            activity_cards = self.session.get(url).json().get("data", {}).get("cards", [])[::-1]
-        except:
-            print(f"Error UID {weibo_id}")
-            return
-
-        messages = self.parse_activity_cards(weibo_id, activity_cards)
-        for message in messages:
-            self.send_message(message)
-
-    def run_all(self):
-        for weibo_id in self.weibo_ids:
-            try:
-                self.run(weibo_id)
-            except:
-                print("发生了错误。")
-                traceback.print_exc()
-            print(f"已完成微博ID {weibo_id} 休息 15 秒")
-            time.sleep(15)
-        print(f"全部完成")
+            print(f"Error running creeper of weibo id ${weibo_id}")
+            traceback.print_exc()
+            continue
 
 
-def die(message: str):
-    print(message)
-    sys.exit(-1)
-
-
-if __name__ == '__main__':
-    weibo_ids = [int(i.strip()) for i in os.getenv("CONFIG_WEIBO_IDS", "").strip().split(":")]
-    if len(weibo_ids) <= 0:
-        die("ERR: No ENV:CONFIG_WEIBO_IDS set")
-    telegram_token = os.getenv("CONFIG_TG_TOKEN").strip() or die("ERR: Missing ENV:CONFIG_TG_TOKEN")
-    telegram_chat = int(os.getenv("CONFIG_TG_CHAT").strip()) or die("ERR: Missing ENV:CONFIG_TG_CHAT")
-    creeper = Creeper(weibo_ids, telegram_token, telegram_chat)
-    creeper.run_all()
-
+if __name__ == "__main__":
+    main()
