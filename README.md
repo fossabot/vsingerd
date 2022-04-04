@@ -8,7 +8,7 @@ Supported platforms:
  - [ ] SMTP
  - [ ] [PushDeer](https://github.com/easychen/pushdeer)
  - [x] CSV Storage
- - [x] MySQL Storage
+ - [ ] MySQL Storage
 
 ## Installation
 ### Preparation
