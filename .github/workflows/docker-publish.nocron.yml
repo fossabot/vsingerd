@@ -29,6 +29,10 @@ jobs:
         uses: docker/metadata-action@98669ae865ea3cffbcbaa878cf57c20bbf1c6c38
         with:
           images: josephcz/vsingerd
+          flavor: |
+            latest=false
+            prefix=
+            suffix=-nocron
 
 
       - name: Build and push Docker image
@@ -37,5 +41,5 @@ jobs:
           file: nocron.Dockerfile
           context: .
           push: true
-          tags: nocron-${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
