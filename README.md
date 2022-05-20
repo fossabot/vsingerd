@@ -1,4 +1,6 @@
 # Vsingerd
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fluotianyi-dev%2Fvsingerd.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fluotianyi-dev%2Fvsingerd?ref=badge_shield)
+
 Vsingerd is a cross social platform reposter. It fetchs [Weibo](https://weibo.com/) updates of specific users and repost to other platforms.
 
 The project is named [Vsinger](https://zh.moegirl.org.cn/%E4%B8%8A%E6%B5%B7%E7%A6%BE%E5%BF%B5%E4%BF%A1%E6%81%AF%E7%A7%91%E6%8A%80%E6%9C%89%E9%99%90%E5%85%AC%E5%8F%B8#Vsinger), the Chinese [VOCALOID](https://zh.wikipedia.org/wiki/VOCALOID) project.
@@ -93,3 +95,6 @@ You should do the initial run, or the timer won't work until you next reboot.
 
 ## License
 MIT License
+
+
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fluotianyi-dev%2Fvsingerd.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fluotianyi-dev%2Fvsingerd?ref=badge_large)
